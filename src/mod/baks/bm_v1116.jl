@@ -1,0 +1,1023 @@
+
+using JuMP
+using Printf
+
+
+include("sets_v10_3.jl")
+include("params_v10_2.jl")
+include("info_i_v10_3.jl")
+
+# 80 
+# 80 ###########################################################################
+# defining the model object
+#
+function createBlockMod(index_l, p::parms, s::sets, io_i::info_i)
+    # 76 
+    # 76 #######################################################################
+    @info "Generating the damn block"
+    #m = Model(Cbc.Optimizer)
+    m = Model()
+    set_silent(m)
+    if index_l isa Int
+        L = [index_l]
+    else
+        @printf "Set passed as a collection\n"
+        L = index_l
+    end
+
+    Kr = s.Kr
+    T = s.T
+    Kn = s.Kn
+    
+    # 76 
+    # 76 #######################################################################
+    # side-effects from the existing plant:
+    # capacity factor
+    # heating requirement
+    # electricity requirement
+    # intrinsic emissions
+    # exstrinsic emissions
+    # scope 1, emitted
+    # scope 1, captured
+    # scope 1, stored
+    # o&m
+    #
+    # states: 
+    # loan
+    # triggered:
+    # annuity
+    # additional capital (ladd)
+    ##
+    # variables
+    ##
+    # tier 0: online status
+    @variable(m, y_o[t=T, l=L], Bin)  # online
+    # tier 1: retrofit variable
+    @variable(m, y_r[t=T, l=L, k=Kr], Bin)
+    # tier 2: retirement
+    # there is no retirement binary variable per se.  
+    
+
+    # d082923
+    # expansion
+    @variable(m, y_e[t=T, l=L])  # 1 if yes expand else no
+    @variable(m, e_c_d_[t=T, l=L, (0,1)])
+
+    @variable(m, e_l_[t=T, l=L])
+    @variable(m, e_l_d_[t=T, l=L, k=(0,1)]) # disaggregated
+
+    @variable(m, 0 <= x[l=L] <= 10, Int)
+    @variable(m, x_d_[t=T, l=L, (0, 1)])
+    
+    # d082223
+    # capacity
+    @variable(m, r_cp[t=T, l=L])
+    @variable(m, r_cp_d_[t=T, l=L, k=Kr])  # retrofit capacity disagg
+    @variable(m, cpb[t=T, l=L] >= 0.0)  # base capacity
+    @variable(m, r_cpb_d_[t=T, l=L, k=Kr] >= 0.0)  # base capacity disagg
+    
+    # d082923
+    # heating requirement
+    @variable(m, r_eh[t=T, l=L]) # 0
+    @variable(m, r_eh_d_[t=T, l=L, k=Kr]) # 1
+    # fuel requirement 
+    @variable(m, r_ehf[t=T, l=L]) # 2
+    @variable(m, r_ehf_d_[t=T, l=L, f=Fu, k=Kr]) # 3
+    # electricity requirement
+    @variable(m, r_u[t=T, l=L]) # 4
+    @variable(m, r_u_d_[t=T, l=L, k=Kr]) # 5
+    # process (intrinsic) emissions
+    @variable(m, r_cpe[t=T, l=L]) # 6
+    @variable(m, r_cpe_d_[t=T, l=L, k=Kr]) # 7
+    # process (extrinsic) disaggregated emissions, e.g. scope 0, etc.
+    @variable(m, r_ep0[t=T, l=L]) # 8
+    @variable(m, r_ep0_d_[t=T, l=L, k=Kr]) # 9
+    # scope 1, emitted
+    @variable(m, r_ep1ge[t=T, l=L]) # 10
+    @variable(m, r_ep1ge_d_[t=T, l=L, k=Kr]) # 11
+    # scope 1, captured
+    @variable(m, r_ep1gce[t=T, l=L]) # 12
+    @variable(m, r_ep1gce_d_[t=T, l=L, k=Kr]) # 13
+    # scope 1,  stored
+    @variable(m, r_ep1gcs[t=T, l=L]) # 14
+    @variable(m, r_ep1gcs_d_[t=T, l=L, k=Kr]) # 15
+    # operating and maintenance
+    @variable(m, r_conm_d_[t=T, l=L, k=Kr])  # 16
+    @variable(m, r_conm[t=T, l=L])  # 17
+
+    # d083023
+    # loan state
+    @variable(m, r_loan[t=T, l=L])
+    @variable(m, r_loan_p[t=T, l=L] >= 0)
+    @variable(m, r_loan_n[t=T, l=L] >= 0)
+    # payment
+    @variable(m, r_pay[t=T, l=L])
+    @variable(m, r_pay_p[t=T, l=L] >= 0)
+    @variable(m, r_pay_n[t=T, l=L] >= 0)
+    # add cost 
+    @variable(m, r_ladd[t=T, l=L])
+    @variable(m, r_ladd_d_[t=T, l=L, (0,1)])
+
+    @variable(m, r_yp[t=T, l=L], Bin)  # paid or not
+    #
+    @variable(m, r_l[t=T, l=L]) # capital (loan)
+    @variable(m, r_l_md_[t=T, l=L, k=Kr]) # 
+    @variable(m, r_l_pd_[t=T, l=L, (0,1)])  # payd or not paid
+    #
+    @variable(m, r_ann[t=T, l=L])
+    @variable(m, r_ann_md_[t=T, l=L, k=Kr])
+    
+    
+    # expansion capacity
+    @variable(m, e_ladd[t=T, l=L])
+    @variable(m, e_ladd_d_[t=T, l=L, (0,)])
+    @variable(m, e_l_pd_[t=T, l=L, (0,1)])
+    @variable(m, e_yp[t=T, l=L], Bin)
+
+    @variable(m, e_loan[t=T, l=L])
+    @variable(m, e_loan_p[t=T, l=L])
+    @variable(m, e_loan_n[t=T, l=L])
+
+    @variable(m, e_pay[t=T, l=L])
+    @variable(m, e_pay_p[t=T, l=L])
+    @variable(m, e_pay_n[t=T, l=L])
+
+    # retrof
+
+
+    # d090423
+    # retirement cost
+    @variable(m, t_loan_d_[t=T, l=L, (0,1)])  # total loan
+    @variable(m, t_rt_c[t=T, l=L])
+    @variable(m, t_rt_c_d_[t=T, l=L, k=(0,)]) # only 0th needed
+    # 76 
+    # 76 #######################################################################
+    ##
+    
+    @variable(m, conm_d_[t=T, l=L, (0, 1)]) # total conm
+    #
+
+    @variable(m, cpay[t=T, l=L]) # total pay capital
+    @variable(m, cpay_d_[t=T, l=L, (0,1)])
+
+    @variable(m, o_cpay[t=T, l=L])
+    @variable(m, o_cpay_d_[t=T, l=L, (0,)])
+
+    # 76 
+    # 76 #######################################################################
+    @variable(m, y_n[t=T, l=L, k=Kn], Bin) # this means plant kind k
+    @variable(m, n_c0[l=L])  # the new capacity
+
+    @variable(m, n_cp[t=T, l=L])
+    @variable(m, n_cp_d_[t=T, l=L, k=Kn]) # disaggregated variable
+
+    @variable(m, n_c0_d_[l=L, k=Kn]) # disaggregated
+
+    #
+    @variable(m, n_l_d_[t=T, l=L, k=Kn])
+    @variable(m, n_l[t=T, l=L])
+
+    @variable(m, n_ann_d_[t=T, l=L, k=Kn])
+    @variable(m, n_ann[t=T, l=L])
+
+    @variable(m, n_ladd_d_[t=T, l=L, (0,1)])
+    @variable(m, n_ladd[t=T, l=L])
+
+    @variable(m, n_l_pd_[t=T, l=L, (0,1)])
+
+    @variable(m, n_loan[t=T, l=L])
+    @variable(m, n_loan_p[t=T, l=L] >= 0)
+    @variable(m, n_loan_n[t=T, l=L] >= 0)
+    @variable(m, n_yp[t=T, l=L], Bin)
+
+    @variable(m, n_pay[t=T, l=L])
+    @variable(m, n_pay_p[t=T, l=L] >= 0)
+    @variable(m, n_pay_n[t=T, l=L] >= 0)
+    
+    # 76 
+    # 76 #######################################################################
+    
+    # heating requirement
+    @variable(m, n_eh[t=T, l=L]) # 0
+    @variable(m, n_eh_d_[t=T, l=L, k=Kn]) # 1
+    # fuel requirement 
+    @variable(m, n_ehf[t=T, l=L]) # 2
+    @variable(m, n_ehf_d_[t=T, l=L, f=Fu, k=Kn]) # 3
+    # electricity requirement
+    @variable(m, n_u[t=T, l=L]) # 4
+    @variable(m, n_u_d_[t=T, l=L, k=Kn]) # 5
+    # process (intrinsic) emissions
+    @variable(m, n_cpe[t=T, l=L]) # 6
+    @variable(m, n_cpe_d_[t=T, l=L, k=Kn]) # 7
+    # process (extrinsic) disaggregated emissions, e.g. scope 0, etc.
+    @variable(m, n_ep0[t=T, l=L]) # 8
+    @variable(m, n_ep0_d_[t=T, l=L, k=Kn]) # 9
+    # scope 1, emitted
+    @variable(m, n_ep1ge[t=T, l=L]) # 10
+    @variable(m, n_ep1ge_d_[t=T, l=L, k=Kn]) # 11
+    # scope 1, captured
+    @variable(m, n_ep1gce[t=T, l=L]) # 12
+    @variable(m, n_ep1gce_d_[t=T, l=L, k=Kn]) # 13
+    # scope 1,  stored
+    @variable(m, n_ep1gcs[t=T, l=L]) # 14
+    @variable(m, n_ep1gcs_d_[t=T, l=L, k=Kn]) # 15
+    # operating and maintenance
+    @variable(m, n_conm_d_[t=T, l=L, k=Kn])  # 16
+    @variable(m, n_conm[t=T, l=L])  # 17
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # tier 0 logic
+    @constraint(m, o_logic_1[t=T, l=L; t<p.t_horizon],
+                y_o[t+1, l] <= y_o[t, l]) # this can only go offline
+
+    @constraint(m, o_logic_init[l=L],
+                y_o[0, l] == 1)  # plants must start online 
+
+
+    # tier 1
+    @constraint(m, logic_tier01_0_e[t=T, l=L],  # only one option
+                sum(y_r[t, l, k] for k in Kr) >= y_o[t, l])
+
+    @constraint(m, logic_tier01_1_e[t=T, l=L, k=Kr],
+                y_o[t, l] >= y_r[t, l, k]
+               )
+
+    #
+    @constraint(m, r_logic_init[l=L, k=Kr; k > 0], # all non 0 modes
+                y_r[0, l, k] == 0
+               )
+    #
+    @constraint(m, r_budget_s[t=T, l=L; t>0], # only one mode
+                sum(y_r[t, l, k] for k in Kr if k > 0) <= 1
+               )
+    #
+    @constraint(m, logic_tier_1_0m_e_[t=T, l=L, k=Kr; k>0], # either 0 or >0 
+                1 >= y_r[t, l, k] + y_r[t, l, 0]
+               )
+    #
+    @constraint(m, r_budget[t=T, l=L, k=Kr; k>0 && t<p.t_horizon],
+                y_r[t+1, l, k] + (1 - y_o[t+1, l]) >= y_r[t, l, k]
+               )
+    # continuity
+
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # d082923
+    # -> expansion
+    # p.e_C[l], the capacity per unit of allocation
+    @constraint(m, exp_d0_e_[t=T, l=L], # only 0 counts
+                e_c_d_[t, l, 0] == p.e_C[l] * x_d_[t, l, 0]
+               )
+    # e_c_bM
+    @constraint(m, exp_ncw_m_i0_[t=T, l=L],
+                e_c_d_[t, l, 0] <= p.e_c_bM * y_e[t, l]
+               )
+    @constraint(m, exp_ncw_s_[t=T, l=L],
+                e_c[t, l] == e_c_d_[t, l, 0]
+               )
+    # x_bM
+    @constraint(m, exp_x_m_i0_[t=T, l=L],
+                x_d_[t, l, 0] <= p.x_bM * y_e[t, l]
+               )
+    # x_bM (relax)
+    @constraint(m, exp_x_m_i1_[t=T, l=L],
+                x_d_[t, l, 1] <= p.x_bM * (1 - y_e[t, l])
+               )
+    @constraint(m, exp_x_s_[t=T, l=L],
+                x[l] == x_d_[t, l, 0] + x_d_[t, l, 1]
+               )
+
+    # -> expansion cost (loan)
+    # p.e_loanFact
+    @constraint(m, e_l_d0_e_[t=T, l=L], # only zero counts
+                e_l_d_[t, l, 0] == p.e_loanFact[l] * x_d_[t, l, 0]
+               )
+    #@constraint(m, e_l_d1_e_[t=T, l=L], # only zero counts
+    #            e_l_d_[t, l, 1] == 0.0 
+    #           )
+    
+    # e_l_bM
+    @constraint(m, e_l_m_i0_[t=T, l=L],
+                e_l_d_[t, l, 0] <= p.e_l_bM * y_e[t, l]
+               )
+    # e_l_bM
+    #@constraint(m, e_l_m_i1_[t=T, l=L],
+    #            e_l_d_[t, l, 1] <= e_l_bM * (1 - y_e[t, l])
+    #           )
+    @constraint(m, e_l_s_[t=T, l=L],
+                #e_l[t, l] == sum(e_l_d_[t, l, k] for k in (0,1))
+                e_l[t, l] == e_l_d_[t, l, 0]
+               )
+
+    # -> expansion cost annuity (annual payment)
+    # p.e_Ann
+    @constraint(m, e_ann_d0_e_[t=T, l=L], # only zero counts
+                e_ann_d_[t, l, 0] == p.e_Ann[l] * x_d_[t, l, 0]
+               )
+    # e_ann_bM
+    @constraint(m, e_ann_m_i0_[t=T, l=L],
+                e_ann_d_[t, l, 0] <= p.e_ann_bM * y_e[t, l]
+               )
+    @constraint(m, e_ann_s_[t=T, l=L],
+                e_ann[t, l] == e_ann_d_[t, l, 0]
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> expansion logic
+    @constraint(m, e_logic_init[l=L], 
+                y_e[0, l] == 0  # start not-expanded
+               )
+    @constraint(m, e_logic_1[t=T, l=L; t<p.t_horizon],
+                y_e[t+1, l] <= y_e[t, l]  # only expand in the future
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # capacity expansion loans (they should be agnostic to retrofit or rf)
+    # components: e_ladd, e_ann, e_pslack, e_ploan
+    # -> e_add
+    # exp add loan
+    @constraint(m, e_ladd_d0_e_[t=T, l=L],
+                e_ladd_d_[t, l, 0] == e_l_pd_[t, l, 0]
+               )
+    @constraint(m, e_ladd_m_i0_[t=T, l=L], # y_e goes from 0 to 1
+                e_ladd_d_[t, l, 0] <= 
+                p.e_ladd_bM*(y_e[t, l] - y_e[t-1, l])
+               )  # 
+    @constraint(m, e_l_m_i1_[t=T, l=L],  # we need to set this to 0
+                e_l_pd_[t, l, 1] <= 
+                p.e_l_bM*(1-y_e[t, l]+y_e[t-1, l])
+               )  #  the 0th component is implied by the e_ladd_m constr
+    @constraint(m, e_ladd_s_e[t=T, l=L],
+                e_ladd[t, l] == e_ladd_d_[t, l, 0]
+               )
+    @constraint(m, e_l_s_e_[t=T, l=L],
+                e_l[t, l] == 
+                #sum(e_l_pd_[t, l, k] for k in (0, 1))
+                e_l_pd_[t, l, 0] + e_l_pd_[t, l, 1]
+               )
+    # linking the annuity
+    @constraint(m, e_pay_e_[t=T, l=L],
+                e_pay[t, l] == e_ann[t, l]
+               )
+
+    # exp payment slacks
+    @constraint(m, e_loan_s_e_[t=T, l=L],
+                e_loan[t, l] == e_loan_p[t, l] - e_loan_n[t, l]
+               )
+    @constraint(m, e_loan_p_m0_i_[t=T, l=L],
+                e_loan_p[t, l] <= p.e_loan_bM * e_yp[t, l]
+               )
+    @constraint(m, e_loan_n_m0_i_[t=T, l=L],
+                e_loan_n[t, l] <= p.e_loan_bM * (1 - e_yp[t, l])
+               )
+    #
+    @constraint(m, e_pay_s_e_[t=T, l=L],
+                e_pay[t, l] == e_pay_p[t, l] - e_pay_n[t, l]
+               )
+    @constraint(m, e_pay_p_m0_i_[t=T, l=L],
+                e_pay_p[t, l] == p.e_pay_bM * e_yp[t, l]
+               )
+    @constraint(m, e_pay_n_m0_i_[t=T, l=L],
+                e_pay_n[t, l] == p.e_pay_bM * (1 - e_yp[t, l])
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> expansion loan balance
+    @constraint(m, e_loan_bal_e_[t=T, l=L; t<last(T)],
+                e_loan[t+1, l] == e_loan[t, l]
+                - e_pay[t, l]
+                + e_ladd[t, l]
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> expansion loan balance
+    # d082923
+    # base capacity
+    @constraint(m, cpb_e_[t=T, l=L],
+                cpb[t, l] == p.c0[l] + e_c[t, l]
+               )
+    # 76 
+    # 76 #######################################################################
+    ##
+    # retrofit 
+    # -> capacity.
+    # p.Kr (capacity factor, e.g. prod in retrofit r / base prod)
+    # viz. cap_mod = factor * cap_base
+    @constraint(m, r_cp_d_e_[t=T, l=L, k=Kr],
+                r_cp_d_[t, l, k] == p.r_c_C[l, k] * r_cpb_d_[t, l, k] 
+                + p.r_rhs_C[l, k] * y_r[t, l, k]
+               ) 
+    # r_cp_bM, retrofit capacity
+    @constraint(m, r_cp_d_m_e_[t=T, l=L, k=Kr],
+                r_cp_d_[t, l, k] <= p.r_cp_bM * y_r[t, l, k]
+               )
+    # cpb_bM, base capacity
+    @constraint(m, r_cpb_d_m_i_[t=T, l=L, k=Kr],
+                r_cpb_d_[t, l, k] <= p.r_cpb_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_cp_s_e_[t=T, l=L],
+                r_cp[t, l] == sum(r_cp_d_[t, l, k] for k in Kr)
+               )
+    @constraint(m, r_cp_s_e_[t=T, l=L],
+                cpb[t, l] == sum(r_cpb_d_[t, l, k] for k in Kr)
+               )
+    # -> heating requirement.
+    # p.Hm (heating factor, i.e. heat / product)
+    @constraint(m, r_eh_d_e_[t=T, l=L, k=Kr],
+                r_eh_d_[t, l, k] == p.r_c_H[l, k] * r_cp_d_[t, l, k] 
+                + p.r_rhs_h[l, k] * y_r[t, l, k]
+               )
+    @constraint(m, r_eh_d_m_i_[t=T, l=L, k=Kr],
+                r_eh_d_[t, l, k] <= p.r_eh_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_eh_s_e_[t=T, l=L],
+                r_eh[t, l] == sum(r_eh_d_[t, l, k] for k in Kr)
+               )
+    # d082923
+    # -> fuel required for heat.
+    # p.r_c_F in [0,1], (i.e. a fraction, heat by fuel /tot heat)
+    @constraint(m, r_ehf_d_e_[t=T, l=L, k=Kr, f=Fu],
+                r_ehf_d_[t, l, k, f] ==
+                p.r_c_F[l, k, f] * r_eh_d_[t, l, k, f] 
+                + p.r_rhs_F[l, k, f] * y_r[t, l, k]
+               )
+    # r_ehf_bM
+    @constraint(m, r_ehf_m_i_[t=T, l=L, k=Kr, f=Fu],
+                r_ehf_d_[t, l, k, f] <= p.r_ehf_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_ehf_s_e_[t=T, l=L, f=Fu],
+                r_ehf[t, l, f] == sum(r_ehf_d_[t, l, k, f] for k in Kr)
+               )
+
+    # -> electricity requirement
+    # r_u and m_ud_, p.Um & p.UmRhs
+    @constraint(m, r_u_d_e_[t=T, l=L, k=Kr],
+                r_u_d_[t, l, k] == p.r_c_U[l, k] * r_cp_d_[t, l, k] 
+                + p.r_rhs_U[l, k] * y_r[t, l, k]
+               )
+    # r_u_bM (big-M)
+    @constraint(m, r_u_i_[t=T, l=L, k=Kr],
+                r_u_d_[t, l, k] <= p.r_u_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_u_s_e_[t=T, l=L],
+                r_u[t, l] == sum(r_u_d_[t, l, k] for k in Kr)
+               )
+
+    # -> process (intrinsic) emissions
+    # r_cpe, r_cpe_d_. p.Cp & p.CpRhs
+    @constraint(m, r_cpe_d_e_[t=T, l=L, k=Kr],
+                r_cpe_d_[t, l, k] == p.r_c_cpe[l, k] * r_cp_d_[t, l, k]
+                + p.r_rhs_cpe[l, k] * y_r[t, l, k]
+               )
+    # r_cpe_bM
+    @constraint(m, r_cpe_m_i_[t=T, l=L, k=Kr],
+                r_cpe_d_[t, l, k] <= p.r_cpe_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_cpe_s_e_[t=T, l=L],
+                r_cpe[t, l] == sum(r_cpe_d_[t, l, k] for k in Kr))
+
+    # -> -> process (disaggregated) emissions
+
+    # -> scope 0 emission
+    # Fef (fuel emission factor)
+    @constraint(m, r_ep0_d_e_[t=T, l=L, k=Kr],
+                r_ep0_d_[t, l, k] == 
+                sum(p.r_Fef[l, k, f] * r_ehf_d_[t, l, k, f] for f in Fu) +
+                r_cpe_d_[t, l, k]
+               )
+    # r_ep0_bM
+    @constraint(m, r_ep0_m_i_[t=T, l=L, k=Kr],
+                r_ep0_d_[t, l, k] <= p.r_ep0_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_ep0_s_e_[t=T, l=L],
+                r_ep0[t, l] == sum(r_ep0_d_[t, l, k] for k in Kr)
+               )
+
+    # -> scope 1 emitted
+    # p.r_chi
+    @constraint(m, r_ep1ge_d_e_[t=T, l=L, k=Kr],
+                r_ep1ge_d_[t, l, k] == (1.0 - p.r_chi[l, k]) * r_ep0_d_[t, l, k]
+               )
+    # r_ep1ge_bM
+    @constraint(m, r_ep1ge_m_i_[t=T, l=L, k=Kr],
+                r_ep1ge_d_[t, l, k] <= p.r_ep1ge_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_ep1ge_s_e_[t=T, l=L],
+                r_ep1ge[t, l] == sum(r_ep1ge_d_[t, l, k] for k in Kr)
+               )
+
+    # -> scope 1 captured
+    # p.r_sigma
+    @constraint(m, r_ep1gce_d_e_[t=T, l=L, k=Kr],
+                r_ep1gce_d_[t, l, k] == 
+                p.r_chi[l, k] * (1-p.r_sigma[l, k]) * r_ep0_d_[t, l, k]
+               )
+    @constraint(m, r_ep1gce_m_i_[t=T, l=L, k=Kr],
+                r_ep1gce_d_[t, l, k] <= p.r_ep1gce_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_ep1gce_s_e_[t=T, l=L],
+                r_ep1gce[t, l] == sum(r_ep1gce_d_[t, l, k] for k in Kr)
+               )
+
+    # -> scope 1 stored
+    # p.sigma ?
+    @constraint(m, r_ep1gcs_d_e_[t=T, l=L, k=Kr],
+                r_ep1gcs_d_[t, l, k] ==
+                p.r_chi[l, k] * p.r_sigma[l, k] * r_ep0_d_[t, l, k]
+               )
+    # ep1gcsm_bM
+    @constraint(m, r_ep1gcs_m_i_[t=T, l=L, k=Kr],
+                r_ep1gcs_d_[t, l, k] <= p.r_ep1gcs_bM * y_r[t, l, k]
+               )
+
+    @constraint(m, r_ep1gcs_s_e_[t=T, l=L],
+                r_ep1gcs[t, l] == sum(r_ep1gcs_d_[t, l, k] for k in Kr)
+               )
+
+    
+    # params include carbon intensity, chi and sigma.
+    # chi : carbon capture
+    # sigma : carbon storage
+    
+    # r_cpe and r_cpe_d_
+    
+    # ep_0 = (sum(hj*chj)+cp) * prod
+    # ep_1ge = ep_0 * (1-chi)
+    # ep_1gce = ep_0 * chi * (1-sigma)
+    # ep_1gcs # stored ?
+    # ep_1nge # not generated emmited
+    # ep_2 = (sum(uj*cuj))
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> operating and maintenance
+    # p.m_Onm
+    @constraint(m, r_conm_d_e_[t=T, l=L, k=Kr],
+                r_conm_d_[t, l, k] == p.r_c_Onm[l, k] * r_cp_d_[t, l, k]
+                + p.r_rhs_Onm[l, k] * y_r[t, l, k]
+               )
+    @constraint(m, r_conm_m_i_[t=T, l=L, k=Kr],
+                r_conm_d_[t, l, k] <= p.r_conm_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_conm_s_e_[t=T, l=L],
+                r_conm[t, l] == sum(r_conm_d_[t, l, k] for k in Kr)
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> retrofit disagg LOAN added amount (ladd), p.r_loanFact
+    @constraint(m, r_l_md_e_[t=T, l=L, k=Kr], # retrofit disagg
+                r_l_md_[t, l, k] == p.r_loanFact[t, l, k] * r_cp_d_[t, l, k]
+               ) # uses c0+expc
+    @constraint(m, r_l_mm_i_[t=T, l=L, k=Kr], # big-M
+                r_l_md_[t, l, k] <= p.r_l_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_l_ms_e_[t=T, l=L],
+                r_l[t, l] == sum(r_l_md_[t, l] for k in (0,1))
+               )
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> retrofit disagg payment (associated with the payment)
+    @constraint(m, r_ann_md_e_[t=T, l=L, k=Kr],
+                r_ann_md_[t, l, k] == p.r_annf[t, l, k] * r_cp_d_[t, l, k]
+               ) # uses c0+expc
+    @constraint(m, r_ann_mm_i_[t=T, l=L, k=Kr],
+                r_ann_md_[t, l, k] <= p.r_ann_bM * y_r[t, l, k]
+               )
+    @constraint(m, r_ann_s_e_[t=T, l=L],
+                r_ann[t, l] == sum(r_ann_md_[t, l, k] for k in Kr)
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # --> padd switch (loan-switch), associated with the loan
+    @constraint(m, r_ladd_d_e_[t=T, l=L], 
+                r_ladd_d_[t, l, 0] == r_l_pd_[t, l, 0]
+               )
+    # p_add_bM
+    @constraint(m, r_ladd_m_i0_[t=T, l=L],
+                r_ladd_d_[t, l, 0] <= # goes from 1 to 0 only
+                p.r_ladd_bM*(y_r[t-1,l,0] - y_r[t,l,0])
+               )
+    # (zero otw.)
+    #@constraint(m, m_ladd_m_i1_[t=T, l=L],
+    #            r_ladd_d_[t, l, 1] <=
+    #            maximum(r_ladd_bM[t, l, k])*(1-y_r[t-1,l,0]+y_r[t,l,0])
+    #           )
+    #
+    @constraint(m, r_ladd_s_e_[t=T, l=L],
+                r_ladd[t, l] == 
+                #sum(r_ladd_d_[t, l, k] for k in (0, 1))
+                r_ladd_d_[t, l, 0]
+               )
+    # padd switch (loan-retrofit)
+    @constraint(m, r_l_m_i0_[t=T, l=L],
+                r_l_pd_[t, l, 0] <=
+                p.r_l_bM*(y_r[t-1,l,0]-y_r[t,l,0])
+               )
+    #
+    @constraint(m, r_l_m_i1_[t=T, l=L],
+                r_l_pd_[t, l, 1] <=
+                p.r_l_bM*(1.0 - y_r[t-1,l,0] + y_r[t,l,0])
+               )
+    # connection to the retrofit 
+    @constraint(m, m_l_s_e_[t=T, l=L], # slack (1) is necessary here
+                r_l[t, l] == sum(r_l_pd_[t, l, k] for k in (0, 1))
+               )
+    
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> payment               
+    @constraint(m, r_pay_e_[t=T, l=L],
+                r_pay[t, l] == r_ann[t, l]
+               )
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> payment slack 
+    @constraint(m, r_loan_s_e_[t=T, l=L],
+                r_loan[t, l] == r_loan_p[t, l] - r_loan_n[t, l]
+               )
+    @constraint(m, r_loan_p_m0_i_[t=T, l=L],
+                r_loan_p[t, l] <= p.r_loan_bM * r_yp[t, l]
+               )
+    @constraint(m, r_loan_n_m0_i_[t=T, l=L],
+                r_loan_n[t, l] <= p.r_loan_bM * (1 - r_yp[t, l])
+               )
+    #
+    @constraint(m, r_pay_s_e_[t=T, l=L],
+                r_pay[t, l] == r_pay_p[t, l] - r_pay_n[t, l]
+               )
+    @constraint(m, r_pay_p_m0_i_[t=T, l=L],
+                r_pay_p[t, l] <= p.r_pay_bM * r_yp[t, l]
+               )
+    @constraint(m, r_pay_n_m0_i_[t=T, l=L],
+                r_pay_n[t, l] <= p.r_pay_bM * (1 - r_yp[t, l])
+               )
+    # if the plant becomes retired r_pay_p might still be positive
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> loan balance
+    @constraint(m, r_loan_bal_e_[t=T, l=L;t<last(T)],
+                r_loan[t+1, l] == r_loan[t, l] 
+                - r_pay[t, l] 
+                + r_ladd[t, l]
+               )
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> retirement
+    # retirement is just r_loan, we just need a way to activate it. 
+    # a) have a switch using y_o going from 0 to 1
+    # b) take the snapshot of the current value of r_loan and use it as the cost
+    #
+    @constraint(m, t_rt_c_d_e_[t=T, l=L],  # only enforcable at the switch
+                t_rt_c_d_[t, l, 0] == t_loan_d_[t, l, 0]
+               )
+    # t_rt_c_bM
+    @constraint(m, t_rt_c_bm0_i_[t=T, l=L],
+                t_rt_c_d_[t, l, 0] <= p.t_rt_c_bM * (y_o[t, l] - y_o[t-1, l])
+               )
+    # t_rt_c_bM (off) - zero everywhere except at the switch
+    #@constraint(m, t_rt_c_bm1_i_[t=T, l=L],
+    #            t_rt_c_d_[t, l, 1] <= t_rt_c_bM * 
+    #            (1 - y_o[t, l] + y_o[t-1, l]))
+    # m_loan_d_bM
+    @constraint(m, r_loan_d_bm0_i_[t=T, l=L],
+                t_loan_d_[t, l, 0] <= p.t_loan_d_bM * (y_o[t, l] - y_o[t-1, l])
+               )
+    # m_loan_d_bM
+    @constraint(m, r_loan_d_bm1_i_[t=T, l=L],
+                t_loan_d_[t, l, 1] <= p.t_loan_d_bM * 
+                (1 - y_o[t, l] + y_o[t-1, l])
+               )
+    @constraint(m, t_rt_c_s_e_[t=T, l=L],
+                #t_rt_c[t, l] == sum(t_rt_c_d_[t, l, k] for k in (0, 1))
+                t_rt_c[t, l] == t_rt_c_d_[t, l, 0]  # only one needed
+               )
+    @constraint(m, r_loan_s_e_[t=T, l=L],  # total loan
+                r_loan_p[t, l] + e_loan_p[t, l]
+                == t_loan_d_[t, l, 0] + t_loan_d_[t, l, 1]
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> new plant capacity
+    @constraint(m, n_c0_e_[l=L],
+                n_c0[l] >= p.c0[l]
+               )
+    # -> new plant capacity disaggregation
+    @constraint(m, n_cp0_d_e_[t=T, l=L],
+                n_cp_d_[t, l, 0] == 0
+               ) # how do we make this 0 at k=0?
+    @constraint(m, n_cp_d_e_[t=T, l=L, k=Kn; k>0],
+                n_cp_d_[t, l, k] == n_c0_d_[l, k]
+               )
+
+    @constraint(m, n_cp_m_i_[t=T, l=L, k=Kn; k>0], # skip the 0-th
+                n_cp_d_[t, l, k] <= p.n_cp_bM * y_n[t, l, k]
+               )
+
+    @constraint(m, n_cap_add_d_m_i_[t=T, l=L, k=Kn],
+                n_c0_d_[t, l, k] <= p.n_c0_bM * y_n[t, l, k]
+               )
+    #
+    @constraint(m, n_cp_s_e_[t=T, l=L],
+                n_cp[t, l] == sum(n_cp_d_[t, l, k] for k in Kn)
+               )
+
+    @constraint(m, n_c0_s_e_[t=T, l=L],
+                n_c0[l] == sum(n_c0_d_[l, k] for k in Kn)
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> base loan (proportional to the capacity)
+    @constraint(m, n_l_d0_e_[t=T, l=L, k=Kn],
+                n_l_d_[t, l, k] == p.n_loadFact[l] * n_cp_d_[t, l, k]
+               ) # this should be 0 at 0th
+    @constraint(m, n_l_m_i0_[t=T, l=L, k=Kn],
+                n_l_d_[t, l, k] <= p.n_l_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_l_s_[t=T, l=L],
+                n_l[t, l] == sum(n_l_d_[t, l, k] for k in Kn)
+               )
+    # -> annuity (how much we pay)
+    @constraint(m, n_ann_d0_e_[t=T, l=L, k=Kn],
+                n_ann_d_[t, l, k] == p.n_Ann[l] * n_cp_d_[t, l, k]
+               )
+    @constraint(m, n_ann_m_i0_[t=T, l=L, k=Kn],
+                n_ann_d_[t, l, k] <= p.n_ann_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_ann_s_[t=T, l=L],
+                n_ann[t, l] == sum(n_ann_d_[t, l, k] for k in Kn)
+               )
+    
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> 
+    # link the n_cost_ to the ladd in a single time period.
+    @constraint(m, n_ladd_m_i0_[t=T, l=L], 
+                n_ladd_d_[t, l, 0] <= 
+                p.n_ladd_bM * (y_n[t-1, l, 0] - y_n[t, l, 0])
+               ) # y_n goes from 1 to 0
+    @constraint(m, n_ladd_m_i1_[t=T, l=L],
+                n_l_pd_[t, l, 1] <= 
+                p.n_l_bM * (1 + y_n[t, l, 0] - y_n[t-1, l, 0])
+               )
+    #
+    @constraint(m, n_ladd_d0_e_[t=T, l=L],
+                n_ladd_d_[t, l, 0] == n_l_pd_[t, l, 0]
+               )
+    @constraint(m, n_ladd_s_e_[t=T, l=L],
+                n_ladd[t, l] == n_ladd_d_[t, l, 0]
+               )
+    @constraint(m, n_l_s_e_[t=T, l=L],
+                n_l[t, l] ==
+                n_l_pd_[t, l, 0] + n_l_pd_[t, l, 1]
+               )
+
+    # #
+    @constraint(m, n_loan_s_e_[t=T, l=L],
+                n_loan[t, l] == n_loan_p[t, l] - n_loan_n[t, l]
+               )
+    @constraint(m, n_loan_p_m0_i_[t=T, l=L],
+                n_loan_p[t, l] <= p.n_loan_bM * n_yp[t, l]
+               )
+    @constraint(m, n_loan_n_m0_i_[t=T, l=L],
+                n_loan_n[t, l] <= p.n_loan_bM * (1 - n_yp[t, l])
+               )
+    #
+    @constraint(m, n_pay_s_e_[t=T, l=L],
+                n_pay[t, l] == n_pay_p[t, l] - n_pay_n[t, l]
+               )
+    @constraint(m, n_pay_p_m0_i_[t=T, l=L],
+                n_pay_p[t, l] == p.n_pay_bM * n_yp[t, l]
+               )
+    @constraint(m, n_pay_n_m0_i_[t=T, l=L],
+                n_pay_n[t, l] == p.n_pay_bM * (1 - n_yp[t, l])
+               )
+    #
+    @constraint(m, n_pay_e_[t=T, l=L],
+                n_pay[t, l] == n_ann[t, l]
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> expansion loan balance
+    @constraint(m, n_loan_bal_e_[t=T, l=L; t<last(T)],
+                n_loan[t+1, l] == n_loan[t, l]
+                - n_pay[t, l]
+                + n_ladd[t, l]
+               )
+
+    # 76 
+    # 76 #######################################################################
+    ##
+
+    # -> heating requirement.
+    # p.Hm (heating factor, i.e. heat / product)
+    @constraint(m, n_eh_d_e_[t=T, l=L, k=Kn],
+                n_eh_d_[t, l, k] == p.n_c_H[l, k] * n_cp_d_[t, l, k] 
+                + p.n_rhs_h[l, k] * y_r[t, l, k]
+               )
+    @constraint(m, n_eh_d_m_i_[t=T, l=L, k=Kn],
+                n_eh_d_[t, l, k] <= p.n_eh_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_eh_s_e_[t=T, l=L],
+                n_eh[t, l] == sum(n_eh_d_[t, l, k] for k in Kn)
+               )
+    # -> fuel required for heat.
+    # p.n_c_F in [0,1], (i.e. a fraction, heat by fuel /tot heat)
+    @constraint(m, n_ehf_d_e_[t=T, l=L, k=Kn, f=Fu],
+                n_ehf_d_[t, l, k, f] ==
+                p.n_c_F[l, k, f] * n_eh_d_[t, l, k, f] 
+                + p.n_rhs_F[l, k, f] * y_n[t, l, k]
+               )
+    # n_ehf_bM
+    @constraint(m, n_ehf_m_i_[t=T, l=L, k=Kn, f=Fu],
+                n_ehf_d_[t, l, k, f] <= p.n_ehf_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_ehf_s_e_[t=T, l=L, f=Fu],
+                n_ehf[t, l, f] == sum(n_ehf_d_[t, l, k, f] for k in Kn)
+               )
+
+    # -> electricity requirement
+    # n_u and m_ud_, p.Um & p.UmRhs
+    @constraint(m, n_u_d_e_[t=T, l=L, k=Kn],
+                n_u_d_[t, l, k] == p.n_c_U[l, k] * n_cp_d_[t, l, k] 
+                + p.n_rhs_U[l, k] * y_n[t, l, k]
+               )
+    # n_u_bM (big-M)
+    @constraint(m, n_u_i_[t=T, l=L, k=Kn],
+                n_u_d_[t, l, k] <= p.n_u_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_u_s_e_[t=T, l=L],
+                n_u[t, l] == sum(n_u_d_[t, l, k] for k in Kn)
+               )
+    
+    # -> process (intrinsic) emissions
+    # n_cpe, n_cpe_d_. p.Cp & p.CpRhs
+    @constraint(m, n_cpe_d_e_[t=T, l=L, k=Kn],
+                n_cpe_d_[t, l, k] == p.n_c_cpe[l, k] * n_cp_d_[t, l, k]
+                + p.n_rhs_cpe[l, k] * y_n[t, l, k]
+               )
+    # n_cpe_bM
+    @constraint(m, n_cpe_m_i_[t=T, l=L, k=Kn],
+                n_cpe_d_[t, l, k] <= p.n_cpe_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_cpe_s_e_[t=T, l=L],
+                n_cpe[t, l] == sum(n_cpe_d_[t, l, k] for k in Kn)
+               )
+
+    # -> -> process (disaggregated) emissions
+
+    # -> scope 0 emission
+    # Fef (fuel emission factor)
+    @constraint(m, n_ep0_d_e_[t=T, l=L, k=Kn],
+                n_ep0_d_[t, l, k] == 
+                sum(p.n_Fef[l, k, f] * n_ehf_d_[t, l, k, f] for f in Fu) +
+                n_cpe_d_[t, l, k]
+               )
+    # n_ep0_bM
+    @constraint(m, n_ep0_m_i_[t=T, l=L, k=Kn],
+                n_ep0_d_[t, l, k] <= p.n_ep0_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_ep0_s_e_[t=T, l=L],
+                n_ep0[t, l] == sum(n_ep0_d_[t, l, k] for k in Kn)
+               )
+    # -> scope 1 emitted
+    # p.n_chi
+    @constraint(m, n_ep1ge_d_e_[t=T, l=L, k=Kn],
+                n_ep1ge_d_[t, l, k] == (1.0 - p.n_chi[l, k]) * n_ep0_d_[t, l, k]
+               )
+    # n_ep1ge_bM
+    @constraint(m, n_ep1ge_m_i_[t=T, l=L, k=Kn],
+                n_ep1ge_d_[t, l, k] <= p.n_ep1ge_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_ep1ge_s_e_[t=T, l=L],
+                n_ep1ge[t, l] == sum(n_ep1ge_d_[t, l, k] for k in Kn)
+               )
+
+    # -> scope 1 captured
+    # p.n_sigma
+    @constraint(m, n_ep1gce_d_e_[t=T, l=L, k=Kn],
+                n_ep1gce_d_[t, l, k] == 
+                p.n_chi[l, k] * (1-p.n_sigma[l, k]) * n_ep0_d_[t, l, k]
+               )
+    @constraint(m, n_ep1gce_m_i_[t=T, l=L, k=Kn],
+                n_ep1gce_d_[t, l, k] <= p.n_ep1gce_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_ep1gce_s_e_[t=T, l=L],
+                n_ep1gce[t, l] == sum(n_ep1gce_d_[t, l, k] for k in Kn)
+               )
+
+    # -> scope 1 stored
+    # p.sigma ?
+    @constraint(m, n_ep1gcs_d_e_[t=T, l=L, k=Kn],
+                n_ep1gcs_d_[t, l, k] ==
+                p.n_chi[l, k] * p.n_sigma[l, k] * n_ep0_d_[t, l, k]
+               )
+    # ep1gcsm_bM
+    @constraint(m, n_ep1gcs_m_i_[t=T, l=L, k=Kn],
+                n_ep1gcs_d_[t, l, k] <= p.n_ep1gcs_bM * y_n[t, l, k]
+               )
+
+    @constraint(m, n_ep1gcs_s_e_[t=T, l=L],
+                n_ep1gcs[t, l] == sum(n_ep1gcs_d_[t, l, k] for k in Kn)
+               )
+    
+    # params include carbon intensity, chi and sigma.
+    # chi : carbon capture
+    # sigma : carbon storage
+    
+    # n_cpe and n_cpe_d_
+    
+    # ep_0 = (sum(hj*chj)+cp) * prod
+    # ep_1ge = ep_0 * (1-chi)
+    # ep_1gce = ep_0 * chi * (1-sigma)
+    # ep_1gcs # stored ?
+    # ep_1nge # not generated emmited
+    # ep_2 = (sum(uj*cuj))
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> operating and maintenance
+    # p.m_Onm
+    @constraint(m, n_conm_d_e_[t=T, l=L, k=Kn],
+                n_conm_d_[t, l, k] == p.n_c_Onm[l, k] * n_cp_d_[t, l, k]
+                + p.n_rhs_Onm[l, k] * y_r[t, l, k]
+               )
+    @constraint(m, n_conm_m_i_[t=T, l=L, k=Kn],
+                n_conm_d_[t, l, k] <= p.n_conm_bM * y_n[t, l, k]
+               )
+    @constraint(m, n_conm_s_e_[t=T, l=L],
+                n_conm[t, l] == sum(n_conm_d_[t, l, k] for k in Kn)
+               )
+
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # -> expansion logic
+    @constraint(m, n_logic_init[l=L], 
+                y_n[0, l] == 0  # start not-expanded
+               )
+    @constraint(m, n_logic_1[t=T, l=L; t<p.t_horizon],
+                y_n[t+1, l] <= y_e[t, l]  # only expand in the future
+               )
+    @constraint(m, n_logic_2[t=T, l=L; k>0 && t>0],
+                1.0 >= y_n[t, l, k] + y_o[t, l])
+
+    # 76 
+    # 76 #######################################################################
+    ##
+    # objective
+    @objective(m, Min,
+               # loan
+               sum(p.discount[t+1] * r_pay_p[t, l] for l in L)
+               + sum(p.discount[t+1] * e_pay_p[t, l] for l in L)
+               + sum(p.discount[t+1] * n_pay_p[t, l] for l in L)
+               # operating and maintenance
+               + sum(p.discount[t+1] * r_conm[t, l] for l in L)
+               + sum(p.discount[t+1] * n_conm[t, l] for l in L)
+               # retirement
+               + sum(p.discount[t+1] * t_rt_c[t, l] for l in L)
+              )
+    # pricing-problem
+    return m
+end
+
+
+function reattachBlockMod!(m::Model, index_l::Vector, p::parms,
+        s::sets)
+    L = index_l 
+    
+    Kr = s.Kr
+    T = s.T
+
+end
+
